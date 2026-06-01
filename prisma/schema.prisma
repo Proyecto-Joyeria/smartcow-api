@@ -1,3 +1,9 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// SmartCow Tracker — Prisma Schema v0.1.0 (Sprint 1)
+// Modelos: Farm, User, UserFarm, RefreshToken
+// Tipos según SmartCow_DataModel_v1.0.0: CUID2 para IDs, TIMESTAMPTZ para fechas
+// ═══════════════════════════════════════════════════════════════════════════════
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -5,4 +11,105 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ── Enums ─────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  VET
+  OPERATOR
+}
+
+// ── Modelos Sprint 1 ──────────────────────────────────────────────────────────
+
+/// Finca ganadera — unidad principal de aislamiento multi-tenant.
+/// Todos los recursos del sistema (animales, geocercas, alertas) pertenecen a una Farm.
+model Farm {
+  id          String   @id @default(cuid()) @db.VarChar(30)
+  name        String   @db.VarChar(100)
+  description String?  @db.Text
+  timezone    String   @default("America/Bogota") @db.VarChar(50)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @db.Timestamptz() @map("created_at")
+  updatedAt   DateTime @updatedAt @db.Timestamptz() @map("updated_at")
+
+  userFarms     UserFarm[]
+  refreshTokens RefreshToken[]
+
+  @@map("farms")
+}
+
+/// Usuario del sistema. Un usuario puede pertenecer a múltiples fincas con roles distintos.
+/// La contraseña se almacena como hash bcrypt factor 12 — nunca en texto plano.
+/// El secreto 2FA se almacena cifrado con AES-256 usando TWO_FACTOR_ENCRYPTION_KEY.
+model User {
+  id           String   @id @default(cuid()) @db.VarChar(30)
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @db.Text @map("password_hash")
+  firstName    String   @db.VarChar(100) @map("first_name")
+  lastName     String   @db.VarChar(100) @map("last_name")
+  phone        String?  @db.VarChar(20)
+
+  /// Secreto TOTP cifrado en reposo con AES-256 (TWO_FACTOR_ENCRYPTION_KEY)
+  twoFactorSecret  String?  @db.Text @map("two_factor_secret")
+  twoFactorEnabled Boolean  @default(false) @map("two_factor_enabled")
+
+  /// Contador de intentos fallidos de login. Se resetea en login exitoso.
+  loginAttempts Int       @default(0) @map("login_attempts")
+  /// Cuando no es null, la cuenta está bloqueada hasta esta fecha.
+  lockedUntil   DateTime? @db.Timestamptz() @map("locked_until")
+  lastLoginAt   DateTime? @db.Timestamptz() @map("last_login_at")
+
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz() @map("created_at")
+  updatedAt DateTime @updatedAt @db.Timestamptz() @map("updated_at")
+
+  userFarms     UserFarm[]
+  refreshTokens RefreshToken[]
+
+  @@index([email])
+  @@map("users")
+}
+
+/// Relación N:M entre User y Farm con rol por finca.
+/// Un usuario puede ser ADMIN en una finca y OPERATOR en otra.
+model UserFarm {
+  id        String   @id @default(cuid()) @db.VarChar(30)
+  userId    String   @db.VarChar(30) @map("user_id")
+  farmId    String   @db.VarChar(30) @map("farm_id")
+  role      UserRole
+  createdAt DateTime @default(now()) @db.Timestamptz() @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  /// Un usuario solo puede tener un rol por finca
+  @@unique([userId, farmId])
+  @@index([farmId])
+  @@index([userId])
+  @@map("user_farms")
+}
+
+/// Refresh tokens para rotación JWT.
+/// Se almacena el HASH SHA-256 del token, nunca el token raw.
+/// El token raw va en cookie HttpOnly Secure SameSite=Strict.
+model RefreshToken {
+  id        String    @id @default(cuid()) @db.VarChar(30)
+  /// SHA-256 del token raw. Permite buscar sin exponer el token en BD.
+  tokenHash String    @unique @db.VarChar(64) @map("token_hash")
+  userId    String    @db.VarChar(30) @map("user_id")
+  farmId    String    @db.VarChar(30) @map("farm_id")
+  expiresAt DateTime  @db.Timestamptz() @map("expires_at")
+  /// Cuando no es null el token fue revocado (logout o rotación)
+  revokedAt DateTime? @db.Timestamptz() @map("revoked_at")
+  createdAt DateTime  @default(now()) @db.Timestamptz() @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }
