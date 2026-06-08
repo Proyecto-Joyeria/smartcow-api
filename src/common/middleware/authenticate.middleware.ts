@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
 import { AppError } from '@common/utils/app-error';
+import { authService } from '@auth/auth.service';
 import type { JwtPayload } from '@auth/auth.types';
 
 // Las claves RSA pueden tener \n literales en el .env — normalizarlas
@@ -11,13 +12,11 @@ const JWT_PUBLIC_KEY = (process.env['JWT_PUBLIC_KEY'] ?? '').replace(/\\n/g, '\n
  * Middleware de autenticación JWT RS256.
  *
  * Extrae y valida el Bearer token del header Authorization.
+ * Verifica además que el token no esté en la blacklist de Redis (tokens revocados por logout).
  * Si es válido, adjunta req.user con { userId, farmId, role, permissions }.
  * Si es inválido o está ausente, pasa un AppError 401 al errorHandler.
- *
- * Uso en routers:
- *   router.get('/ruta', authenticate, authorize('recurso:accion'), Controller.handler);
  */
-export function authenticate(req: Request, _res: Response, next: NextFunction): void {
+export async function authenticate(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers.authorization;
 
   if (!authHeader?.startsWith('Bearer ')) {
@@ -25,7 +24,7 @@ export function authenticate(req: Request, _res: Response, next: NextFunction): 
     return;
   }
 
-  const token = authHeader.slice(7); // Extraer el token después de "Bearer "
+  const token = authHeader.slice(7);
 
   try {
     const payload = jwt.verify(token, JWT_PUBLIC_KEY, {
@@ -38,7 +37,13 @@ export function authenticate(req: Request, _res: Response, next: NextFunction): 
       return;
     }
 
-    // Adjuntar contexto del usuario al request para uso en controllers
+    // Verificar blacklist: tokens invalidados por logout explícito
+    const isBlacklisted = await authService.isTokenBlacklisted(token);
+    if (isBlacklisted) {
+      next(new AppError(401, 'UNAUTHORIZED', 'El token ha sido invalidado. Inicia sesión de nuevo.'));
+      return;
+    }
+
     req.user = {
       userId:      payload.sub,
       farmId:      payload.farmId,

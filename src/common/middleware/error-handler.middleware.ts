@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
@@ -17,7 +18,7 @@ export function errorHandler(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _next: NextFunction,
 ): void {
-  const requestId = (req.headers['x-request-id'] as string | undefined) ?? crypto.randomUUID();
+  const requestId = (req.headers['x-request-id'] as string | undefined) ?? randomUUID();
   const timestamp = new Date().toISOString();
 
   // ── 1. AppError — error de dominio esperado ──────────────────────────────

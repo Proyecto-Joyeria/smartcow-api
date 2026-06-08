@@ -24,7 +24,7 @@ import type { LoginDto, RegisterDto, TwoFactorVerifyDto } from '@auth/auth.schem
 // ── Constantes ────────────────────────────────────────────────────────────────
 
 const MAX_LOGIN_ATTEMPTS       = 5;
-const LOCKOUT_DURATION_SECONDS = 15 * 60; // 15 minutos
+const LOCKOUT_DURATION_SECONDS = parseInt(process.env['LOCKOUT_DURATION_SECONDS'] ?? String(15 * 60), 10);
 const BCRYPT_ROUNDS            = 12;
 
 // Las claves RSA pueden llegar con \n literales desde el archivo .env
@@ -38,8 +38,9 @@ const TWO_FACTOR_KEY = process.env['TWO_FACTOR_ENCRYPTION_KEY'] ?? '';
 
 // ── Claves Redis ──────────────────────────────────────────────────────────────
 // Nota: el prefijo smartcow: es añadido automáticamente por el cliente Redis
-const loginAttemptsKey = (userId: string) => `auth:login-attempts:${userId}`;
-const accountLockedKey = (userId: string) => `auth:account-locked:${userId}`;
+const loginAttemptsKey    = (userId: string) => `auth:login-attempts:${userId}`;
+const accountLockedKey    = (userId: string) => `auth:account-locked:${userId}`;
+const tokenBlacklistKey   = (tokenHash: string) => `auth:token-blacklist:${tokenHash}`;
 
 // ── Helpers privados ──────────────────────────────────────────────────────────
 
@@ -124,8 +125,8 @@ export class AuthService implements IAuthService {
     const isLockedRedis = await redisGet<boolean>(accountLockedKey(user.id));
     if (isLockedRedis || (user.lockedUntil !== null && user.lockedUntil > new Date())) {
       throw new AppError(
-        423,
-        'ACCOUNT_LOCKED',
+        429,
+        'RATE_LIMITED',
         'Cuenta bloqueada temporalmente. Intenta de nuevo en 15 minutos.',
       );
     }
@@ -150,9 +151,9 @@ export class AuthService implements IAuthService {
         });
 
         throw new AppError(
-          423,
-          'ACCOUNT_LOCKED',
-          'Cuenta bloqueada 15 minutos por múltiples intentos fallidos.',
+          429,
+          'RATE_LIMITED',
+          'Cuenta bloqueada por múltiples intentos fallidos.',
         );
       }
 
@@ -258,6 +259,32 @@ export class AuthService implements IAuthService {
     }
 
     return this.issueTokens(user);
+  }
+
+  // ── blacklistAccessToken ───────────────────────────────────────────────────
+  // Invalida un access token en Redis hasta que expire su TTL natural.
+  // Llamado desde logout para que el token no pueda reutilizarse.
+
+  async blacklistAccessToken(rawToken: string): Promise<void> {
+    try {
+      const payload = jwt.decode(rawToken) as { exp?: number; sub?: string } | null;
+      if (!payload?.exp) return;
+      const ttl = payload.exp - Math.floor(Date.now() / 1000);
+      if (ttl <= 0) return;
+      const tokenHash = hashToken(rawToken);
+      await redisSet(tokenBlacklistKey(tokenHash), true, ttl);
+      logger.info('AuthService: access token añadido a blacklist', { userId: payload.sub });
+    } catch {
+      // Silenciar errores — logout siempre debe completarse
+    }
+  }
+
+  // ── isTokenBlacklisted ─────────────────────────────────────────────────────
+
+  async isTokenBlacklisted(rawToken: string): Promise<boolean> {
+    const tokenHash = hashToken(rawToken);
+    const hit = await redisGet<boolean>(tokenBlacklistKey(tokenHash));
+    return hit === true;
   }
 
   // ── generateTwoFactorSecret ────────────────────────────────────────────────

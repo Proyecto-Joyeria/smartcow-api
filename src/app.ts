@@ -13,7 +13,9 @@ import { prisma } from '@prisma/prisma.service';
 import { redisClient } from '@redis/redis.service';
 
 // ── Módulos de rutas (se irán agregando sprint a sprint) ─────────────────────
-import { authRouter } from '@auth/auth.router';
+import { authRouter }    from '@auth/auth.router';
+import { animalsRouter } from '@animals/animals.router';
+import { devicesRouter } from '@admin/devices/devices.router';
 
 // ── Configuración ─────────────────────────────────────────────────────────────
 const PORT       = parseInt(process.env['PORT'] ?? '4000', 10);
@@ -57,13 +59,13 @@ app.get('/health', (_req, res) => {
 });
 
 // ── Rutas de la API ────────────────────────────────────────────────────────────
-app.use(`${API_PREFIX}/auth`, authRouter);
+app.use(`${API_PREFIX}/auth`,          authRouter);
+app.use(`${API_PREFIX}/animals`,       animalsRouter);
+app.use(`${API_PREFIX}/admin/devices`, devicesRouter);
 
-// Sprint 2+: agregar aquí los demás routers
-// app.use(`${API_PREFIX}/animals`,   animalsRouter);
+// Sprint 3+: agregar aquí los demás routers
 // app.use(`${API_PREFIX}/geofences`, geofenceRouter);
 // app.use(`${API_PREFIX}/alerts`,    alertsRouter);
-// app.use(`${API_PREFIX}/admin`,     adminRouter);
 // app.use(`${API_PREFIX}/analytics`, analyticsRouter);
 
 // ── Manejo de rutas no encontradas y errores ──────────────────────────────────

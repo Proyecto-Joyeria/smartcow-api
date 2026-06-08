@@ -22,6 +22,43 @@ enum UserRole {
   OPERATOR
 }
 
+enum Breed {
+  BRAHMAN
+  HOLSTEIN
+  ANGUS
+  SIMMENTAL
+  CEBUINO
+  OTRO
+}
+
+enum Sex {
+  M
+  F
+}
+
+enum AnimalStatus {
+  ACTIVE
+  SOLD
+  DECEASED
+  TRANSFERRED
+}
+
+enum HealthStatus {
+  HEALTHY
+  SICK
+  RECOVERING
+  UNDER_OBSERVATION
+  CRITICAL
+}
+
+enum ReproductiveStatus {
+  OPEN
+  PREGNANT
+  LACTATING
+  DRY
+  CULLED
+}
+
 // ── Modelos Sprint 1 ──────────────────────────────────────────────────────────
 
 /// Finca ganadera — unidad principal de aislamiento multi-tenant.
@@ -37,6 +74,8 @@ model Farm {
 
   userFarms     UserFarm[]
   refreshTokens RefreshToken[]
+  animals       Animal[]
+  devices       Device[]
 
   @@map("farms")
 }
@@ -112,4 +151,62 @@ model RefreshToken {
   @@index([userId])
   @@index([expiresAt])
   @@map("refresh_tokens")
+}
+
+// ── Modelos Sprint 2 ──────────────────────────────────────────────────────────
+
+/// Bovino registrado en la finca. Soft delete via deletedAt.
+/// Identificado unívocamente por el par (farmId, code) — código interno de la finca.
+model Animal {
+  id                 String              @id @default(cuid()) @db.VarChar(30)
+  farmId             String              @db.VarChar(30) @map("farm_id")
+  code               String              @db.VarChar(30)
+  name               String?             @db.VarChar(100)
+  breed              Breed
+  sex                Sex
+  birthDate          DateTime?           @db.Timestamptz() @map("birth_date")
+  weightKg           Decimal?            @db.Decimal(6, 2) @map("weight_kg")
+  photoUrl           String?             @db.Text @map("photo_url")
+  areteNumber        String?             @db.VarChar(30) @map("arete_number")
+  status             AnimalStatus        @default(ACTIVE)
+  healthStatus       HealthStatus        @default(HEALTHY) @map("health_status")
+  reproductiveStatus ReproductiveStatus? @map("reproductive_status")
+  notes              String?             @db.Text
+  deletedAt          DateTime?           @db.Timestamptz() @map("deleted_at")
+  createdAt          DateTime            @default(now()) @db.Timestamptz() @map("created_at")
+  updatedAt          DateTime            @updatedAt @db.Timestamptz() @map("updated_at")
+
+  farm   Farm    @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  /// Dispositivo IoT actualmente asignado a este animal (FK está en Device)
+  device Device?
+
+  @@unique([farmId, code])
+  @@index([farmId])
+  @@index([farmId, deletedAt])
+  @@map("animals")
+}
+
+/// Collar IoT (dispositivo GPS/sensores). Un device puede estar asignado a un solo animal.
+/// El id es UUID v4 — coincide con el campo `d` del payload MQTT.
+model Device {
+  id              String    @id @default(uuid()) @db.Uuid
+  farmId          String    @db.VarChar(30) @map("farm_id")
+  /// Animal al que está asignado actualmente; null = sin asignar
+  animalId        String?   @unique @db.VarChar(30) @map("animal_id")
+  serialNumber    String    @unique @db.VarChar(50) @map("serial_number")
+  firmwareVersion String    @db.VarChar(20) @map("firmware_version")
+  /// Huella digital del certificado TLS del collar
+  certFingerprint String?   @unique @db.Text @map("cert_fingerprint")
+  certExpiresAt   DateTime? @db.Timestamptz() @map("cert_expires_at")
+  batteryPct      Int?      @map("battery_pct")
+  lastSeenAt      DateTime? @db.Timestamptz() @map("last_seen_at")
+  isActive        Boolean   @default(true) @map("is_active")
+  createdAt       DateTime  @default(now()) @db.Timestamptz() @map("created_at")
+  updatedAt       DateTime  @updatedAt @db.Timestamptz() @map("updated_at")
+
+  farm   Farm    @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal Animal? @relation(fields: [animalId], references: [id], onDelete: SetNull)
+
+  @@index([farmId])
+  @@map("devices")
 }

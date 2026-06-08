@@ -25,7 +25,8 @@
       "@prisma/*":        ["./src/prisma/*"],
       "@redis/*":         ["./src/redis/*"],
       "@workers/*":       ["./src/workers/*"],
-      "@common/*":        ["./src/common/*"]
+      "@common/*":        ["./src/common/*"],
+      "@admin/*":         ["./src/admin/*"]
     },
 
     "declaration": true,

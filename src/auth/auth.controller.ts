@@ -102,20 +102,26 @@ export const AuthController = {
 
   /**
    * POST /auth/logout
-   * Cookie: refreshToken
-   * Response: 204 No Content
+   * Header: Authorization: Bearer <accessToken>  (para invalidar el access token)
+   * Cookie: refreshToken                          (para revocar el refresh token)
+   * Response: 204 No Content — siempre, incluso si no hay cookie o token
    */
-  async logout(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const rawRefreshToken = extractRefreshToken(req);
-      await authService.logout(rawRefreshToken);
-      clearRefreshCookie(res);
-      res.status(204).send();
-    } catch (err) {
-      // En logout, si el token no existe igual limpiamos la cookie
-      clearRefreshCookie(res);
-      next(err);
+  async logout(req: Request, res: Response): Promise<void> {
+    // Blacklistear el access token si viene en el header
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      const rawAccessToken = authHeader.slice(7);
+      await authService.blacklistAccessToken(rawAccessToken);
     }
+
+    // Revocar el refresh token si viene en la cookie
+    const rawRefreshToken = req.cookies['refreshToken'] as string | undefined;
+    if (rawRefreshToken) {
+      await authService.logout(rawRefreshToken);
+    }
+
+    clearRefreshCookie(res);
+    res.status(204).send();
   },
 
   /**
