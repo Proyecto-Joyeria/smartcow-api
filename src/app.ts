@@ -12,6 +12,11 @@ import { errorHandler } from '@common/middleware/error-handler.middleware';
 import { prisma } from '@prisma/prisma.service';
 import { redisClient } from '@redis/redis.service';
 
+// ── Servicios de tiempo real (Sprint 3) ──────────────────────────────────────
+import { initQueues, closeQueues } from '@workers/queues';
+import { wsGateway } from '@realtime/ws.gateway';
+import { mqttService } from '@gps/mqtt.service';
+
 // ── Módulos de rutas (se irán agregando sprint a sprint) ─────────────────────
 import { authRouter }    from '@auth/auth.router';
 import { animalsRouter } from '@animals/animals.router';
@@ -86,6 +91,16 @@ async function bootstrap(): Promise<void> {
   await redisClient.ping();
   logger.info('Redis conectado');
 
+  // Colas productoras Bull MQ (los consumidores corren en el proceso worker aparte)
+  initQueues();
+
+  // WebSocket Gateway (Socket.IO) adjunto al mismo servidor HTTP
+  wsGateway.init(httpServer);
+
+  // Ingesta MQTT de telemetría IoT
+  mqttService.connect();
+  logger.info('MQTT service inicializado');
+
   httpServer.listen(PORT, () => {
     logger.info(`smartcow-api arrancado`, {
       port:      PORT,
@@ -98,6 +113,13 @@ async function bootstrap(): Promise<void> {
 // ── Cierre graceful ───────────────────────────────────────────────────────────
 async function shutdown(signal: string): Promise<void> {
   logger.info(`Señal ${signal} recibida — cerrando servidor...`);
+
+  // Cerrar primero los servicios de tiempo real para dejar de aceptar eventos
+  await Promise.allSettled([
+    mqttService.disconnect(),
+    wsGateway.close(),
+    closeQueues(),
+  ]);
 
   httpServer.close(async () => {
     await prisma.$disconnect();

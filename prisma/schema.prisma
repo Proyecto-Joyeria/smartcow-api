@@ -210,3 +210,49 @@ model Device {
   @@index([farmId])
   @@map("devices")
 }
+
+// ── Modelos Sprint 3 ──────────────────────────────────────────────────────────
+// Tablas de telemetría de alta frecuencia (un INSERT por animal cada ~10s).
+// Diseño deliberado:
+//   - id BigInt autoincrement → BIGSERIAL, soporta miles de millones de filas.
+//   - farmId DESNORMALIZADO (sin FK) → evita el overhead de validación referencial
+//     en cada escritura y permite filtrar por finca sin JOIN. El aislamiento
+//     multi-tenant se garantiza en la capa de repositorio (siempre se filtra por farmId).
+//   - Índices compuestos (entidad, recordedAt DESC) → optimizan la query típica:
+//     "últimas N lecturas de este animal/finca ordenadas por fecha".
+
+/// Histórico de posiciones GPS. Fuente de verdad para reproducción de rutas.
+/// El flujo en tiempo real NO lee de aquí — lee de Redis. Esta tabla la escribe
+/// el worker persist-gps de forma asíncrona vía Bull MQ.
+model GpsHistory {
+  id         BigInt   @id @default(autoincrement())
+  animalId   String   @db.VarChar(30) @map("animal_id")
+  farmId     String   @db.VarChar(30) @map("farm_id")
+  lat        Decimal  @db.Decimal(10, 7)
+  lng        Decimal  @db.Decimal(10, 7)
+  alt        Decimal? @db.Decimal(7, 2)
+  accuracy   Decimal? @db.Decimal(6, 2)
+  speedKmh   Decimal? @db.Decimal(6, 2) @map("speed_kmh")
+  recordedAt DateTime @db.Timestamptz() @map("recorded_at")
+
+  @@index([animalId, recordedAt(sort: Desc)])
+  @@index([farmId, recordedAt(sort: Desc)])
+  @@map("gps_history")
+}
+
+/// Histórico de signos vitales (temperatura, ritmo cardíaco, actividad, batería).
+/// Misma estrategia de escritura asíncrona y denormalización que GpsHistory.
+model VitalHistory {
+  id         BigInt   @id @default(autoincrement())
+  animalId   String   @db.VarChar(30) @map("animal_id")
+  farmId     String   @db.VarChar(30) @map("farm_id")
+  tempC      Decimal  @db.Decimal(4, 1) @map("temp_c")
+  heartBpm   Int      @map("heart_bpm")
+  activity   Int
+  batteryPct Int      @map("battery_pct")
+  recordedAt DateTime @db.Timestamptz() @map("recorded_at")
+
+  @@index([animalId, recordedAt(sort: Desc)])
+  @@index([farmId, recordedAt(sort: Desc)])
+  @@map("vital_history")
+}

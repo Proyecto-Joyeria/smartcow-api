@@ -4,6 +4,7 @@ import multer from 'multer';
 import { authenticate } from '@common/middleware/authenticate.middleware';
 import { authorize } from '@common/guards/authorize.guard';
 import { AnimalController } from '@animals/animals.controller';
+import { GpsController } from '@gps/gps.controller';
 
 const router = Router();
 
@@ -74,20 +75,30 @@ router.delete(
   AnimalController.softDelete,
 );
 
-// ── Placeholders GPS / vitales ────────────────────────────────────────────────
+// ── GPS y vitales (Sprint 3 — delegados al módulo @gps) ───────────────────────
 
+/** Posición actual desde Redis (fallback PostgreSQL) */
 router.get(
   '/:id/location',
   authenticate,
   authorize('animals:read'),
-  AnimalController.getLocation,
+  GpsController.getCurrentLocation,
 );
 
+/** Histórico de posiciones GPS (?from=&to=) */
+router.get(
+  '/:id/history',
+  authenticate,
+  authorize('animals:read'),
+  GpsController.getLocationHistory,
+);
+
+/** Histórico de signos vitales (?from=&to=&resolution=raw|hour|day) */
 router.get(
   '/:id/vitals',
   authenticate,
   authorize('animals:read'),
-  AnimalController.getVitals,
+  GpsController.getVitalHistory,
 );
 
 export { router as animalsRouter };

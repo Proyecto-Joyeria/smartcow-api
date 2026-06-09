@@ -124,25 +124,6 @@ export const AnimalController = {
     }
   },
 
-  /**
-   * GET /animals/:id/location  — placeholder hasta que se implemente GPS
-   */
-  async getLocation(_req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      res.status(200).json({ data: null, message: 'GPS no implementado aún' });
-    } catch (err) {
-      next(err);
-    }
-  },
-
-  /**
-   * GET /animals/:id/vitals  — placeholder hasta que se implementen vitales
-   */
-  async getVitals(_req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      res.status(200).json({ data: [], message: 'Vitales no implementados aún' });
-    } catch (err) {
-      next(err);
-    }
-  },
+  // GPS y vitales (location / history / vitals) los maneja GpsController en el
+  // módulo @gps — ver animals.router.ts.
 };

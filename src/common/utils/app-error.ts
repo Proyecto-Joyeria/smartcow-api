@@ -6,6 +6,7 @@ export type ErrorCode =
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'TOO_MANY_REQUESTS'
+  | 'RATE_LIMITED'
   | 'ACCOUNT_LOCKED'
   | 'INVALID_CREDENTIALS'
   | 'INVALID_TOKEN'

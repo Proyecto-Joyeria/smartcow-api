@@ -57,6 +57,9 @@ authRouter.post('/logout', AuthController.logout);
 // POST /auth/refresh — requiere cookie refreshToken, rate limit general
 authRouter.post('/refresh', AuthController.refresh);
 
+// GET /auth/me — requiere JWT válido; devuelve el usuario autenticado (con farmId)
+authRouter.get('/me', authenticate, AuthController.me);
+
 // GET /auth/2fa/setup — requiere JWT válido (usuario autenticado)
 authRouter.get('/2fa/setup', authenticate, AuthController.setupTwoFactor);
 

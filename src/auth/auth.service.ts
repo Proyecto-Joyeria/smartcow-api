@@ -16,6 +16,7 @@ import type {
   AuthTokensDto,
   TwoFactorRequiredDto,
   TwoFactorSetupDto,
+  UserSummaryDto,
   UserWithFarm,
 } from '@auth/auth.types';
 import { ROLE_PERMISSIONS } from '@auth/auth.types';
@@ -82,6 +83,21 @@ function decryptSecret(ciphertext: string): string {
 /** SHA-256 del token raw — es lo que se almacena en BD */
 function hashToken(rawToken: string): string {
   return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+/** Construye el resumen público del usuario para el cliente (sin datos sensibles) */
+function buildUserSummary(
+  user: UserWithFarm,
+  farmEntry: UserWithFarm['userFarms'][number],
+): UserSummaryDto {
+  return {
+    id:               user.id,
+    email:            user.email,
+    name:             `${user.firstName} ${user.lastName}`.trim(),
+    role:             farmEntry.role,
+    farmId:           farmEntry.farmId,
+    twoFactorEnabled: user.twoFactorEnabled,
+  };
 }
 
 /** Firma el access token RS256 con el payload completo del usuario */
@@ -379,7 +395,32 @@ export class AuthService implements IAuthService {
       expiresAt: refreshExpiresAt,
     });
 
-    return { accessToken, expiresIn, rawRefreshToken };
+    return {
+      accessToken,
+      expiresIn,
+      rawRefreshToken,
+      user: buildUserSummary(user, farmEntry),
+    };
+  }
+
+  // ── getMe ────────────────────────────────────────────────────────────────────
+
+  /**
+   * Devuelve el resumen del usuario autenticado para la finca de su token.
+   * Si el usuario pertenece a varias fincas, usa la del token (farmId).
+   */
+  async getMe(userId: string, farmId: string): Promise<UserSummaryDto> {
+    const user = await authRepository.findUserById(userId);
+    if (!user || !user.active) {
+      throw new AppError(401, 'UNAUTHORIZED', 'Usuario no encontrado o inactivo');
+    }
+
+    const farmEntry = user.userFarms.find((f) => f.farmId === farmId) ?? user.userFarms[0];
+    if (!farmEntry) {
+      throw new AppError(403, 'FORBIDDEN', 'El usuario no pertenece a ninguna finca');
+    }
+
+    return buildUserSummary(user, farmEntry);
   }
 }
 

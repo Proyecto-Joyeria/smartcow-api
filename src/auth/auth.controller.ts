@@ -70,6 +70,7 @@ export const AuthController = {
         data: {
           accessToken: result.accessToken,
           expiresIn:   result.expiresIn,
+          user:        result.user,
         },
       });
     } catch (err) {
@@ -80,7 +81,7 @@ export const AuthController = {
   /**
    * POST /auth/register
    * Body: { email, password, firstName, lastName, farmName, phone? }
-   * Response: { data: { accessToken, expiresIn } } + cookie refreshToken
+   * Response: { data: { accessToken, expiresIn, user } } + cookie refreshToken
    */
   async register(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -93,8 +94,26 @@ export const AuthController = {
         data: {
           accessToken: result.accessToken,
           expiresIn:   result.expiresIn,
+          user:        result.user,
         },
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  /**
+   * GET /auth/me
+   * Header: Authorization: Bearer <accessToken>
+   * Response: { data: { id, email, name, role, farmId, twoFactorEnabled } }
+   */
+  async me(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw new AppError(401, 'UNAUTHORIZED', 'No autenticado');
+      }
+      const result = await authService.getMe(req.user.userId, req.user.farmId);
+      res.status(200).json({ data: result });
     } catch (err) {
       next(err);
     }

@@ -79,14 +79,28 @@ export interface TempTokenPayload {
 // ── DTOs de respuesta ─────────────────────────────────────────────────────────
 
 /**
+ * Resumen del usuario autenticado — lo consume el frontend para el shell,
+ * el control de acceso por rol y el namespace WebSocket (necesita farmId).
+ */
+export interface UserSummaryDto {
+  id:               string;
+  email:            string;
+  name:             string;  // firstName + lastName
+  role:             UserRole;
+  farmId:           string;
+  twoFactorEnabled: boolean;
+}
+
+/**
  * Resultado interno de operaciones de autenticación.
  * El controller extrae rawRefreshToken → cookie HttpOnly y devuelve
- * { accessToken, expiresIn } al cliente en el body.
+ * { accessToken, expiresIn, user } al cliente en el body.
  */
 export interface AuthTokensDto {
   accessToken:     string;
   expiresIn:       number; // segundos hasta que expira el access token
   rawRefreshToken: string; // token raw para la cookie — NO incluir en el body de respuesta
+  user:            UserSummaryDto; // datos del usuario para el cliente
 }
 
 /** Respuesta de /login cuando 2FA SÍ está activo */
@@ -126,6 +140,7 @@ export interface IAuthService {
   refreshTokens(refreshToken: string): Promise<AuthTokensDto>;
   generateTwoFactorSecret(userId: string, email: string): Promise<TwoFactorSetupDto>;
   verifyTwoFactor(dto: TwoFactorVerifyDto): Promise<AuthTokensDto>;
+  getMe(userId: string, farmId: string): Promise<UserSummaryDto>;
 }
 
 // ── Tipos de datos internos ───────────────────────────────────────────────────
