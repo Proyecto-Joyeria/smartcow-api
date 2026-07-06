@@ -259,6 +259,81 @@ export function subscribeToFarm(
   return subscriber;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Geocercas activas por finca — Sprint 4
+//
+// El AlertEngine evalúa Point-in-Polygon en cada lectura de telemetría. Para no
+// golpear PostgreSQL en ese camino de alta frecuencia, las geocercas ACTIVAS de la
+// finca se cachean como JSON (TTL 1h) y se invalidan al crear/editar/borrar/togglear.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const GEOFENCE_CACHE_TTL_SECONDS = 60 * 60; // 1h
+const farmGeofencesKey = (farmId: string): string => `farm:${farmId}:geofences`;
+
+/** Guarda las geocercas activas de una finca (JSON) con TTL de 1h. */
+export async function cacheFarmGeofences(farmId: string, geofences: unknown): Promise<void> {
+  await redisSet(farmGeofencesKey(farmId), geofences, GEOFENCE_CACHE_TTL_SECONDS);
+}
+
+/** Lee las geocercas activas cacheadas de una finca, o null si no hay cache. */
+export async function getCachedFarmGeofences<T>(farmId: string): Promise<T | null> {
+  return redisGet<T>(farmGeofencesKey(farmId));
+}
+
+/** Invalida la cache de geocercas de una finca (tras cualquier mutación). */
+export async function invalidateFarmGeofences(farmId: string): Promise<void> {
+  await redisDel(farmGeofencesKey(farmId));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Canal de eventos de dominio por finca — Sprint 5
+//
+// Además del canal GPS de tiempo real, cada finca tiene un canal de EVENTOS de
+// dominio (alertas, geocercas, estado de sensor). El WS gateway se suscribe y
+// reemite cada evento con su nombre a los clientes de la finca. Se usa un canal
+// separado del GPS para no mezclar telemetría de alta frecuencia con eventos raros.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Nombre del evento de dominio y su payload, tal como lo consume el frontend (IDD §7). */
+export interface FarmDomainEvent {
+  event:   'alert:new' | 'alert:updated' | 'geofence:event' | 'sensor:offline' | 'sensor:online' | 'animal:status';
+  payload: Record<string, unknown>;
+}
+
+const farmEventsChannel = (farmId: string): string => `farm:${farmId}:events`;
+
+/** Publica un evento de dominio en el canal de eventos de la finca. */
+export async function publishFarmEvent(farmId: string, event: FarmDomainEvent): Promise<void> {
+  await redisClient.publish(farmEventsChannel(farmId), JSON.stringify(event));
+}
+
+/**
+ * Suscribe un callback al canal de EVENTOS de dominio de una finca con una conexión
+ * dedicada. El llamador debe hacer `.unsubscribe()` + `.quit()` al limpiar.
+ */
+export function subscribeToFarmEvents(
+  farmId:   string,
+  callback: (event: FarmDomainEvent) => void,
+): Redis {
+  const subscriber = redisClient.duplicate();
+  const channel = farmEventsChannel(farmId);
+
+  subscriber.subscribe(channel).catch((err: Error) => {
+    logger.error('Redis: error al suscribirse al canal de eventos de finca', { farmId, message: err.message });
+  });
+
+  subscriber.on('message', (ch: string, message: string) => {
+    if (ch !== channel) return;
+    try {
+      callback(JSON.parse(message) as FarmDomainEvent);
+    } catch {
+      logger.warn('Redis: evento de finca no es JSON válido', { channel: ch });
+    }
+  });
+
+  return subscriber;
+}
+
 /** Cachea el routing deviceId → { animalId, farmId } por 1h (HSET device:{id}). */
 export async function cacheDeviceRouting(
   deviceId: string,

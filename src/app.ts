@@ -13,14 +13,16 @@ import { prisma } from '@prisma/prisma.service';
 import { redisClient } from '@redis/redis.service';
 
 // ── Servicios de tiempo real (Sprint 3) ──────────────────────────────────────
-import { initQueues, closeQueues } from '@workers/queues';
+import { initQueues, closeQueues, schedulePeriodicChecks } from '@workers/queues';
 import { wsGateway } from '@realtime/ws.gateway';
 import { mqttService } from '@gps/mqtt.service';
 
 // ── Módulos de rutas (se irán agregando sprint a sprint) ─────────────────────
-import { authRouter }    from '@auth/auth.router';
-import { animalsRouter } from '@animals/animals.router';
-import { devicesRouter } from '@admin/devices/devices.router';
+import { authRouter }     from '@auth/auth.router';
+import { animalsRouter }  from '@animals/animals.router';
+import { devicesRouter }  from '@admin/devices/devices.router';
+import { geofenceRouter } from '@geofence/geofence.router';
+import { alertsRouter }   from '@alerts/alerts.router';
 
 // ── Configuración ─────────────────────────────────────────────────────────────
 const PORT       = parseInt(process.env['PORT'] ?? '4000', 10);
@@ -67,10 +69,10 @@ app.get('/health', (_req, res) => {
 app.use(`${API_PREFIX}/auth`,          authRouter);
 app.use(`${API_PREFIX}/animals`,       animalsRouter);
 app.use(`${API_PREFIX}/admin/devices`, devicesRouter);
+app.use(`${API_PREFIX}/geofences`,     geofenceRouter);   // Sprint 4
+app.use(`${API_PREFIX}/alerts`,        alertsRouter);      // Sprint 5
 
-// Sprint 3+: agregar aquí los demás routers
-// app.use(`${API_PREFIX}/geofences`, geofenceRouter);
-// app.use(`${API_PREFIX}/alerts`,    alertsRouter);
+// Sprint 6+: agregar aquí los demás routers
 // app.use(`${API_PREFIX}/analytics`, analyticsRouter);
 
 // ── Manejo de rutas no encontradas y errores ──────────────────────────────────
@@ -93,6 +95,9 @@ async function bootstrap(): Promise<void> {
 
   // Colas productoras Bull MQ (los consumidores corren en el proceso worker aparte)
   initQueues();
+
+  // Job repetible del barrido periódico de alertas (sensor offline / inmovilidad)
+  await schedulePeriodicChecks();
 
   // WebSocket Gateway (Socket.IO) adjunto al mismo servidor HTTP
   wsGateway.init(httpServer);
@@ -135,12 +140,16 @@ async function shutdown(signal: string): Promise<void> {
   }, 10_000);
 }
 
-process.on('SIGTERM', () => void shutdown('SIGTERM'));
-process.on('SIGINT',  () => void shutdown('SIGINT'));
+// En pruebas (Vitest) se importa `app` con supertest SIN arrancar el servidor,
+// las conexiones MQTT/WS ni los listeners de señales. En ejecución normal, arranca.
+if (!process.env['VITEST']) {
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT',  () => void shutdown('SIGINT'));
 
-bootstrap().catch((err: unknown) => {
-  logger.error('Error fatal durante bootstrap', { err });
-  process.exit(1);
-});
+  bootstrap().catch((err: unknown) => {
+    logger.error('Error fatal durante bootstrap', { err });
+    process.exit(1);
+  });
+}
 
 export { app, httpServer };

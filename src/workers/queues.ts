@@ -46,8 +46,10 @@ export const bullConnection: ConnectionOptions = parseBullConnection();
 // ── Nombres de cola ─────────────────────────────────────────────────────────────
 
 export const QUEUE_NAMES = {
-  PERSIST_GPS:     'persist-gps',
-  EVALUATE_ALERTS: 'evaluate-alerts',
+  PERSIST_GPS:      'persist-gps',
+  EVALUATE_ALERTS:  'evaluate-alerts',
+  NOTIFICATIONS:    'notifications',   // Sprint 5
+  PERIODIC_CHECKS:  'periodic-checks', // Sprint 5 (sensor offline / inmovilidad)
 } as const;
 
 // ── Tipos de datos de los jobs ──────────────────────────────────────────────────
@@ -78,6 +80,22 @@ export interface TelemetryJobData {
 export type PersistGpsJobData     = TelemetryJobData;
 export type EvaluateAlertsJobData = TelemetryJobData;
 
+/** Job de notificación de una alerta (email/SMS según prioridad). Sprint 5. */
+export interface NotificationJobData {
+  alertId:     string;
+  farmId:      string;
+  animalId:    string;
+  ruleId:      string;
+  priority:    'CRITICAL' | 'WARNING' | 'INFO';
+  title:       string;
+  description: string;
+}
+
+/** Job del barrido periódico de reglas dependientes de estado. Sprint 5. */
+export interface PeriodicChecksJobData {
+  kind: 'sensor-offline-and-immobility';
+}
+
 // ── Opciones por defecto (reintentos + backoff, según architecture.md) ──────────
 
 /** persist-gps: prioridad Alta, 5 reintentos */
@@ -96,16 +114,31 @@ export const EVALUATE_ALERTS_JOB_OPTS: JobsOptions = {
   removeOnFail:     5_000,
 };
 
+/** notifications: 3 reintentos con backoff largo (SendGrid/Twilio 5xx) — IDD §8.1 */
+export const NOTIFICATIONS_JOB_OPTS: JobsOptions = {
+  attempts:        3,
+  backoff:         { type: 'exponential', delay: 30_000 }, // 30s → 2min → 8min aprox
+  removeOnComplete: 1_000,
+  removeOnFail:     5_000,
+};
+
 /** Concurrencia de cada Worker (la consume index.ts al crear los Worker) */
 export const QUEUE_CONCURRENCY = {
   PERSIST_GPS:     10,
   EVALUATE_ALERTS: 5,
+  NOTIFICATIONS:   5,
+  PERIODIC_CHECKS: 1,
 } as const;
+
+/** Cada cuánto corre el barrido periódico (sensor offline / inmovilidad). */
+export const PERIODIC_CHECKS_EVERY_MS = 5 * 60 * 1000; // 5 min
 
 // ── Instancias productoras (lazy singletons) ────────────────────────────────────
 
-let persistGpsQueue:     Queue<PersistGpsJobData>     | null = null;
-let evaluateAlertsQueue: Queue<EvaluateAlertsJobData> | null = null;
+let persistGpsQueue:     Queue<PersistGpsJobData>       | null = null;
+let evaluateAlertsQueue: Queue<EvaluateAlertsJobData>   | null = null;
+let notificationsQueue:  Queue<NotificationJobData>     | null = null;
+let periodicChecksQueue: Queue<PeriodicChecksJobData>   | null = null;
 
 export function getPersistGpsQueue(): Queue<PersistGpsJobData> {
   if (!persistGpsQueue) {
@@ -129,6 +162,25 @@ export function getEvaluateAlertsQueue(): Queue<EvaluateAlertsJobData> {
   return evaluateAlertsQueue;
 }
 
+export function getNotificationsQueue(): Queue<NotificationJobData> {
+  if (!notificationsQueue) {
+    notificationsQueue = new Queue(QUEUE_NAMES.NOTIFICATIONS, {
+      connection:        bullConnection,
+      defaultJobOptions: NOTIFICATIONS_JOB_OPTS,
+    }) as Queue<NotificationJobData>;
+  }
+  return notificationsQueue;
+}
+
+export function getPeriodicChecksQueue(): Queue<PeriodicChecksJobData> {
+  if (!periodicChecksQueue) {
+    periodicChecksQueue = new Queue(QUEUE_NAMES.PERIODIC_CHECKS, {
+      connection: bullConnection,
+    }) as Queue<PeriodicChecksJobData>;
+  }
+  return periodicChecksQueue;
+}
+
 /**
  * Inicializa las colas productoras al arrancar la API (Sprint 3, sección 9).
  * Idempotente: getXQueue() ya es lazy; esto fuerza la creación y deja traza.
@@ -136,9 +188,30 @@ export function getEvaluateAlertsQueue(): Queue<EvaluateAlertsJobData> {
 export function initQueues(): void {
   getPersistGpsQueue();
   getEvaluateAlertsQueue();
+  getNotificationsQueue();
+  getPeriodicChecksQueue();
   logger.info('Bull MQ: colas productoras inicializadas', {
     queues: Object.values(QUEUE_NAMES),
   });
+}
+
+/**
+ * Programa el job repetible del barrido periódico (sensor offline / inmovilidad)
+ * cada 5 min. Idempotente: Bull MQ deduplica por `jobId` repetible, así que llamarlo
+ * en cada arranque no crea duplicados.
+ */
+export async function schedulePeriodicChecks(): Promise<void> {
+  await getPeriodicChecksQueue().add(
+    'scan',
+    { kind: 'sensor-offline-and-immobility' },
+    {
+      repeat:  { every: PERIODIC_CHECKS_EVERY_MS },
+      jobId:   'periodic-checks-scan',
+      removeOnComplete: 100,
+      removeOnFail:     100,
+    },
+  );
+  logger.info('Bull MQ: barrido periódico programado', { everyMs: PERIODIC_CHECKS_EVERY_MS });
 }
 
 /** Cierra las colas productoras en el shutdown graceful de la API. */
@@ -146,7 +219,11 @@ export async function closeQueues(): Promise<void> {
   await Promise.all([
     persistGpsQueue?.close(),
     evaluateAlertsQueue?.close(),
+    notificationsQueue?.close(),
+    periodicChecksQueue?.close(),
   ]);
   persistGpsQueue     = null;
   evaluateAlertsQueue = null;
+  notificationsQueue  = null;
+  periodicChecksQueue = null;
 }

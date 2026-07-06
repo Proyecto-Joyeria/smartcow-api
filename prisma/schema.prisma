@@ -59,6 +59,23 @@ enum ReproductiveStatus {
   CULLED
 }
 
+/// Prioridad de una alerta (Sprint 5). Determina el canal de notificación:
+/// INFO → solo web · WARNING → web + email · CRITICAL → web + email + SMS.
+enum AlertPriority {
+  CRITICAL
+  WARNING
+  INFO
+}
+
+/// Ciclo de vida de una alerta (Sprint 5).
+/// OPEN → ACKNOWLEDGED → (ASSIGNED) → CLOSED.
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  ASSIGNED
+  CLOSED
+}
+
 // ── Modelos Sprint 1 ──────────────────────────────────────────────────────────
 
 /// Finca ganadera — unidad principal de aislamiento multi-tenant.
@@ -76,6 +93,8 @@ model Farm {
   refreshTokens RefreshToken[]
   animals       Animal[]
   devices       Device[]
+  geofences     Geofence[]
+  alerts        Alert[]
 
   @@map("farms")
 }
@@ -107,6 +126,10 @@ model User {
 
   userFarms     UserFarm[]
   refreshTokens RefreshToken[]
+  createdGeofences Geofence[]    @relation("GeofenceCreatedBy")
+  assignedAlerts   Alert[]       @relation("AlertAssignee")
+  alertActions     AlertAction[]
+  auditLogs        AuditLog[]
 
   @@index([email])
   @@map("users")
@@ -179,6 +202,7 @@ model Animal {
   farm   Farm    @relation(fields: [farmId], references: [id], onDelete: Cascade)
   /// Dispositivo IoT actualmente asignado a este animal (FK está en Device)
   device Device?
+  alerts Alert[]
 
   @@unique([farmId, code])
   @@index([farmId])
@@ -255,4 +279,113 @@ model VitalHistory {
   @@index([animalId, recordedAt(sort: Desc)])
   @@index([farmId, recordedAt(sort: Desc)])
   @@map("vital_history")
+}
+
+// ── Modelos Sprint 4 — Geocercas ───────────────────────────────────────────────
+
+/// Geocerca poligonal de una finca. El polígono se guarda como JSON (array de
+/// {lat, lng}, mín. 3 y máx. 50 vértices). La evaluación Point-in-Polygon se hace
+/// en la capa de aplicación con ray casting (ver geofence.geometry.ts), por lo que
+/// no se requiere la extensión PostGIS: es una decisión deliberada del DevPlan.
+/// Solo las geocercas `active` disparan alertas GEOFENCE_EXIT.
+model Geofence {
+  id          String   @id @default(cuid()) @db.VarChar(30)
+  farmId      String   @db.VarChar(30) @map("farm_id")
+  name        String   @db.VarChar(100)
+  description String?  @db.Text
+  /// Array de vértices [{ lat, lng }, ...]. Validado por Zod (3..50 vértices).
+  polygon     Json     @db.JsonB
+  color       String   @default("#1a7a4a") @db.Char(7)
+  active      Boolean  @default(true)
+  createdBy   String   @db.VarChar(30) @map("created_by")
+  createdAt   DateTime @default(now()) @db.Timestamptz() @map("created_at")
+  updatedAt   DateTime @updatedAt @db.Timestamptz() @map("updated_at")
+
+  farm    Farm   @relation(fields: [farmId], references: [id], onDelete: Restrict)
+  creator User   @relation("GeofenceCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  alerts  Alert[]
+
+  @@index([farmId, active])
+  @@map("geofences")
+}
+
+// ── Modelos Sprint 5 — Motor de Alertas ────────────────────────────────────────
+
+/// Alerta generada por el motor de reglas (patrón Strategy). Ciclo de vida
+/// completo OPEN → ACKNOWLEDGED → (ASSIGNED) → CLOSED. `response_ms` se calcula
+/// al cerrar (opened_at → closed_at) para las métricas de tiempo de respuesta.
+model Alert {
+  id          String        @id @default(cuid()) @db.VarChar(30)
+  farmId      String        @db.VarChar(30) @map("farm_id")
+  animalId    String        @db.VarChar(30) @map("animal_id")
+  /// Geocerca involucrada — solo en alertas GEOFENCE_EXIT. SET NULL al borrarla.
+  geofenceId  String?       @db.VarChar(30) @map("geofence_id")
+  /// Id de la regla que la disparó. Ej: HIGH_TEMP, GEOFENCE_EXIT, SENSOR_OFFLINE.
+  ruleId      String        @db.VarChar(50) @map("rule_id")
+  priority    AlertPriority
+  status      AlertStatus   @default(OPEN)
+  title       String        @db.VarChar(200)
+  description String        @db.Text
+  /// Contexto del evento: { tempC, threshold, lat, lng, ... }
+  metadata    Json?         @db.JsonB
+  assigneeId  String?       @db.VarChar(30) @map("assignee_id")
+  resolution  String?       @db.Text
+  openedAt    DateTime      @default(now()) @db.Timestamptz() @map("opened_at")
+  closedAt    DateTime?     @db.Timestamptz() @map("closed_at")
+  responseMs  Int?          @map("response_ms")
+
+  farm     Farm          @relation(fields: [farmId], references: [id], onDelete: Restrict)
+  animal   Animal        @relation(fields: [animalId], references: [id], onDelete: Restrict)
+  geofence Geofence?     @relation(fields: [geofenceId], references: [id], onDelete: SetNull)
+  assignee User?         @relation("AlertAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  actions  AlertAction[]
+
+  @@index([farmId, status, priority])
+  @@index([animalId, openedAt(sort: Desc)])
+  @@index([farmId, openedAt(sort: Desc)])
+  @@index([farmId, ruleId, openedAt])
+  @@map("alerts")
+}
+
+/// Historial de acciones sobre una alerta (reconocer, asignar, cerrar). Es el log
+/// de auditoría específico del ciclo de vida de la alerta. Se borra en cascada con
+/// la alerta. `userId` es null cuando la acción la ejecuta el sistema (CREATED).
+model AlertAction {
+  id        BigInt   @id @default(autoincrement())
+  alertId   String   @db.VarChar(30) @map("alert_id")
+  userId    String?  @db.VarChar(30) @map("user_id")
+  /// Acción: CREATED | ACKNOWLEDGED | ASSIGNED | CLOSED
+  action    String   @db.VarChar(30)
+  note      String?  @db.Text
+  createdAt DateTime @default(now()) @db.Timestamptz() @map("created_at")
+
+  alert Alert @relation(fields: [alertId], references: [id], onDelete: Cascade)
+  user  User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([alertId])
+  @@map("alert_actions")
+}
+
+/// Log de auditoría global e inmutable (§3.12 DataModel). Registra acciones
+/// sensibles del sistema: acciones sobre alertas, gestión de geocercas, etc.
+/// La aplicación solo hace INSERT — nunca UPDATE ni DELETE.
+model AuditLog {
+  id         BigInt   @id @default(autoincrement())
+  userId     String?  @db.VarChar(30) @map("user_id")
+  farmId     String?  @db.VarChar(30) @map("farm_id")
+  action     String   @db.VarChar(50)
+  entityType String?  @db.VarChar(30) @map("entity_type")
+  entityId   String?  @db.VarChar(30) @map("entity_id")
+  oldValues  Json?    @db.JsonB @map("old_values")
+  newValues  Json?    @db.JsonB @map("new_values")
+  ipAddress  String?  @db.Inet @map("ip_address")
+  userAgent  String?  @db.Text @map("user_agent")
+  occurredAt DateTime @default(now()) @db.Timestamptz() @map("occurred_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([farmId])
+  @@index([action])
+  @@index([occurredAt])
+  @@map("audit_logs")
 }

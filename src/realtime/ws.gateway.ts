@@ -4,7 +4,12 @@ import jwt from 'jsonwebtoken';
 import type Redis from 'ioredis';
 
 import { logger } from '@common/utils/logger';
-import { subscribeToFarm, type GpsEventPayload } from '@redis/redis.service';
+import {
+  subscribeToFarm,
+  subscribeToFarmEvents,
+  type GpsEventPayload,
+  type FarmDomainEvent,
+} from '@redis/redis.service';
 import type { JwtPayload } from '@auth/auth.types';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -18,10 +23,13 @@ import type { JwtPayload } from '@auth/auth.types';
 const JWT_PUBLIC_KEY = (process.env['JWT_PUBLIC_KEY'] ?? '').replace(/\\n/g, '\n');
 const CORS_ORIGIN    = process.env['CORS_ORIGIN'] ?? 'http://localhost:5173';
 
-/** Suscripción Redis compartida por todos los sockets de una finca */
+/** Suscripciones Redis compartidas por todos los sockets de una finca */
 interface FarmSubscription {
-  subscriber: Redis;
-  refCount:   number;
+  /** Canal GPS de alta frecuencia (animal:position) */
+  gpsSubscriber:    Redis;
+  /** Canal de eventos de dominio (alert:new, alert:updated, geofence:event, ...) */
+  eventSubscriber:  Redis;
+  refCount:         number;
 }
 
 class WsGateway {
@@ -127,33 +135,45 @@ class WsGateway {
       return;
     }
 
-    const subscriber = subscribeToFarm(farmId, (payload: GpsEventPayload) => {
+    // Canal GPS de tiempo real → animal:position
+    const gpsSubscriber = subscribeToFarm(farmId, (payload: GpsEventPayload) => {
       this.io?.of(`/farms/${farmId}`).to(`farm:${farmId}`).emit('animal:position', payload);
     });
 
-    this.farmSubscriptions.set(farmId, { subscriber, refCount: 1 });
-    logger.debug('WS: suscripción Redis creada para finca', { farmId });
+    // Canal de eventos de dominio → se reemite cada evento con su propio nombre
+    // (alert:new, alert:updated, geofence:event, sensor:offline, animal:status).
+    const eventSubscriber = subscribeToFarmEvents(farmId, (event: FarmDomainEvent) => {
+      this.io?.of(`/farms/${farmId}`).to(`farm:${farmId}`).emit(event.event, event.payload);
+    });
+
+    this.farmSubscriptions.set(farmId, { gpsSubscriber, eventSubscriber, refCount: 1 });
+    logger.debug('WS: suscripciones Redis creadas para finca', { farmId });
   }
 
-  /** Decrementa el refcount; cuando llega a 0 cierra la suscripción Redis. */
+  /** Decrementa el refcount; cuando llega a 0 cierra ambas suscripciones Redis. */
   private releaseFarmSubscription(farmId: string): void {
     const sub = this.farmSubscriptions.get(farmId);
     if (!sub) return;
 
     sub.refCount -= 1;
     if (sub.refCount <= 0) {
-      void sub.subscriber.unsubscribe();
-      void sub.subscriber.quit();
+      this.closeSubscription(sub);
       this.farmSubscriptions.delete(farmId);
-      logger.debug('WS: suscripción Redis cerrada para finca', { farmId });
+      logger.debug('WS: suscripciones Redis cerradas para finca', { farmId });
     }
+  }
+
+  private closeSubscription(sub: FarmSubscription): void {
+    void sub.gpsSubscriber.unsubscribe();
+    void sub.gpsSubscriber.quit();
+    void sub.eventSubscriber.unsubscribe();
+    void sub.eventSubscriber.quit();
   }
 
   /** Cierra el gateway y todas las suscripciones Redis en el shutdown graceful. */
   async close(): Promise<void> {
     for (const sub of this.farmSubscriptions.values()) {
-      void sub.subscriber.unsubscribe();
-      void sub.subscriber.quit();
+      this.closeSubscription(sub);
     }
     this.farmSubscriptions.clear();
 

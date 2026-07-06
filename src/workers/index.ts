@@ -8,9 +8,13 @@ import {
   bullConnection,
   type PersistGpsJobData,
   type EvaluateAlertsJobData,
+  type NotificationJobData,
+  type PeriodicChecksJobData,
 } from '@workers/queues';
 import { persistGpsProcessor } from '@workers/processors/persist-gps.processor';
 import { evaluateAlertsProcessor } from '@workers/processors/evaluate-alerts.processor';
+import { notifyProcessor } from '@workers/processors/notify.processor';
+import { periodicChecksProcessor } from '@workers/processors/periodic-checks.processor';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Entry point del proceso worker — Sprint 3
@@ -54,12 +58,28 @@ function startWorkers(): void {
   );
   attachLifecycle(evaluateAlertsWorker, QUEUE_NAMES.EVALUATE_ALERTS);
 
-  workers.push(persistGpsWorker, evaluateAlertsWorker);
+  const notificationsWorker = new Worker<NotificationJobData>(
+    QUEUE_NAMES.NOTIFICATIONS,
+    notifyProcessor,
+    { connection: bullConnection, concurrency: QUEUE_CONCURRENCY.NOTIFICATIONS },
+  );
+  attachLifecycle(notificationsWorker, QUEUE_NAMES.NOTIFICATIONS);
+
+  const periodicChecksWorker = new Worker<PeriodicChecksJobData>(
+    QUEUE_NAMES.PERIODIC_CHECKS,
+    periodicChecksProcessor,
+    { connection: bullConnection, concurrency: QUEUE_CONCURRENCY.PERIODIC_CHECKS },
+  );
+  attachLifecycle(periodicChecksWorker, QUEUE_NAMES.PERIODIC_CHECKS);
+
+  workers.push(persistGpsWorker, evaluateAlertsWorker, notificationsWorker, periodicChecksWorker);
 
   logger.info('Workers Bull MQ arrancados', {
     queues: [
       { name: QUEUE_NAMES.PERSIST_GPS,     concurrency: QUEUE_CONCURRENCY.PERSIST_GPS },
       { name: QUEUE_NAMES.EVALUATE_ALERTS, concurrency: QUEUE_CONCURRENCY.EVALUATE_ALERTS },
+      { name: QUEUE_NAMES.NOTIFICATIONS,   concurrency: QUEUE_CONCURRENCY.NOTIFICATIONS },
+      { name: QUEUE_NAMES.PERIODIC_CHECKS, concurrency: QUEUE_CONCURRENCY.PERIODIC_CHECKS },
     ],
   });
 }
